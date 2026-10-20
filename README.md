@@ -1,24 +1,6 @@
 # Audio Archive Player v0.5.1
 
-## Ustawienia
-
-Aplikacja zapisuje ustawienia w pliku `config.json` obok `audio_player.py`. Plik jest tworzony automatycznie przy pierwszym zapisie ustawień.
-
-Przykład:
-```json
-{
-  "theme": "nord",
-  "volume": 75,
-  "last_directory": "D:\\Audio"
-}
-```
-
-Zapisywane ustawienia:
-- `theme` — aktywny motyw graficzny Textual;
-- `volume` — głośność mpv w zakresie 0–100;
-- `last_directory` — ostatnio używany katalog, otwierany przy kolejnym uruchomieniu, jeśli nie podano ścieżki w wierszu poleceń.
-
-Naciśnij `T`, aby przełączać motywy. Ikony katalogów są monochromatyczne i przyjmują kolor akcentu aktywnego motywu. Zmiana motywu i głośności zapisuje się automatycznie. Jeśli podasz katalog przy uruchomieniu, ma on pierwszeństwo przed zapamiętanym katalogiem.
+Aplikacja do odtwarzania w konsoli plików muzycznych, oraz archiwów.
 
 ## Instalacja i uruchomienie
 
@@ -46,3 +28,23 @@ python .\audio_player.py "D:\Audio\Moja kolekcja"
 - `-` / `+` — zmiana głośności o 5 punktów
 - `T` — zmiana motywu
 - `Q` — wyjście
+
+## Ustawienia
+
+Aplikacja zapisuje ustawienia w pliku `config.json` obok `audio_player.py`. Plik jest tworzony automatycznie przy pierwszym zapisie ustawień.
+
+Przykład:
+```json
+{
+  "theme": "nord",
+  "volume": 75,
+  "last_directory": "D:\\Audio"
+}
+```
+
+Zapisywane ustawienia:
+- `theme` — aktywny motyw graficzny Textual;
+- `volume` — głośność mpv w zakresie 0–100;
+- `last_directory` — ostatnio używany katalog, otwierany przy kolejnym uruchomieniu, jeśli nie podano ścieżki w wierszu poleceń.
+
+Naciśnij `T`, aby przełączać motywy. Ikony katalogów są monochromatyczne i przyjmują kolor akcentu aktywnego motywu. Zmiana motywu i głośności zapisuje się automatycznie. Jeśli podasz katalog przy uruchomieniu, ma on pierwszeństwo przed zapamiętanym katalogiem.
