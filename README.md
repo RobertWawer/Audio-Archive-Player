@@ -1,4 +1,4 @@
-# Audio Archive Player v0.5.1
+# Audio Archive Player
 
 Aplikacja do odtwarzania w konsoli plików muzycznych, oraz archiwów.
 
