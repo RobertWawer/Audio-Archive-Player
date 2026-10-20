@@ -1,0 +1,4 @@
+textual>=6.0
+mutagen>=1.47
+py7zr>=1.0
+rarfile>=4.2
