@@ -38,7 +38,7 @@ except ImportError:
 AUDIO = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".wv", ".ape", ".aiff", ".aif"}
 ARCHIVES = {".zip", ".7z", ".rar"}
 CONFIG_PATH = Path(__file__).with_name("config.json")
-DEFAULT_CONFIG = {"theme": "textual-dark", "volume": 100, "last_directory": ""}
+DEFAULT_CONFIG = {"theme": "textual-dark", "volume": 100, "last_directory": "", "playback": {}}
 # Themes included by Textual. Press T to cycle through them.
 THEME_NAMES = (
     "textual-dark", "textual-light", "nord", "gruvbox", "tokyo-night",
@@ -63,6 +63,8 @@ def load_config():
         config["volume"] = 100
     if not isinstance(config.get("last_directory"), str):
         config["last_directory"] = ""
+    if not isinstance(config.get("playback"), dict):
+        config["playback"] = {}
     return config
 
 
@@ -513,12 +515,16 @@ class Mpv:
             except OSError:
                 pass
 
-    def load(self, path):
-        self.command(
-            "loadfile",
-            str(Path(path).resolve()),
-            "replace",
-        )
+    def load(self, path, start_position=0.0, paused=False):
+        options = {}
+        if start_position and start_position > 0:
+            options["start"] = str(float(start_position))
+        if paused:
+            options["pause"] = "yes"
+        command = ["loadfile", str(Path(path).resolve()), "replace"]
+        if options:
+            command.extend([-1, options])
+        self.command(*command)
 
     def stop_playback(self):
         self.command("stop")
@@ -594,6 +600,10 @@ class Player(App):
     #main { height: 1fr; }
     #browser { width: 65%; border: round $accent; }
     #info { width: 35%; border: round $accent; padding: 1 2; }
+    #total { height: 1; padding: 0 1; }
+    .audio-row { width: 100%; height: 1; }
+    .audio-name { width: 1fr; }
+    .audio-duration { width: 8; text-align: right; color: $text-muted; }
     #now { height: 9; border: round $accent; padding: 1 2; }
     #bar { height: 1; margin: 0 2; content-align: center middle; }
     #time { height: 1; content-align: center middle; }
@@ -633,12 +643,18 @@ class Player(App):
         self.paused = False
         self.vol = self.config["volume"]
         self.mpv = Mpv(self.on_mpv_event)
+        self._duration_scan_id = 0
+        self.restore_enabled = start_dir is None
+        self.saved_playback = dict(self.config.get("playback") or {}) if self.restore_enabled else {}
+        self.current_entry = None
+        self._last_playback_save = 0.0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="main"):
             with Vertical(id="browser"):
                 yield Label("", id="title")
+                yield Label("Łączny czas audio: —", id="total")
                 yield ListView(id="list")
             with Vertical(id="info"):
                 yield Static("Wybierz plik.", id="details")
@@ -659,6 +675,8 @@ class Player(App):
             )
             self.cwd = Path.cwd()
         self.refresh_fs()
+        if self.restore_enabled:
+            self.restore_playback_state()
         self.set_interval(.20, self.tick)
 
     def on_unmount(self):
@@ -673,7 +691,83 @@ class Player(App):
             "volume": max(0, min(100, int(getattr(self, "vol", 100)))),
             "last_directory": str(getattr(self, "cwd", Path.cwd())),
         })
+        if hasattr(self, "current") and self.current:
+            paused = bool(self.paused)
+            # On exit, resume only when the user had explicitly paused playback.
+            self.config["playback"] = {
+                "mode": self.mode,
+                "directory": str(self.cwd),
+                "archive": str(self.archive) if self.mode == "archive" and self.archive else "",
+                "file": self.current_entry.name if self.mode == "archive" and self.current_entry else str(self.current),
+                "position": max(0.0, float(self.pos)) if paused else 0.0,
+                "paused": paused,
+            }
         save_config(self.config)
+
+    def save_stopped_selection(self, *, mode=None, file_name=None, archive=None):
+        """Persist the last selected track without requesting automatic playback."""
+        mode = mode or self.mode
+        if file_name is None:
+            if mode == "archive" and self.current_entry:
+                file_name = self.current_entry.name
+            elif self.current:
+                file_name = str(self.current)
+        # Save theme/volume/directory first, then override any active-playback
+        # snapshot with the explicit stopped-selection state.
+        self.save_settings()
+        self.config["playback"] = {
+            "mode": mode,
+            "directory": str(self.cwd),
+            "archive": str(archive or self.archive or "") if mode == "archive" else "",
+            "file": file_name or "",
+            "position": 0.0,
+            "paused": False,
+        }
+        save_config(self.config)
+
+    def restore_playback_state(self):
+        state = self.saved_playback
+        if not state:
+            return
+        try:
+            mode = state.get("mode", "fs")
+            directory = Path(state.get("directory", "")).expanduser()
+            paused = bool(state.get("paused", False))
+            position = max(0.0, float(state.get("position", 0.0)))
+            file_name = state.get("file", "")
+            if mode == "archive":
+                archive_path = Path(state.get("archive", "")).expanduser()
+                if not archive_path.is_file() or archive_path.suffix.lower() not in ARCHIVES:
+                    return
+                self.cwd = directory if directory.is_dir() else archive_path.parent
+                self.refresh_fs()
+                self.open_archive(archive_path)
+                index = next((i for i, e in enumerate(self.items) if e.name == file_name), -1)
+                if index < 0:
+                    return
+                if paused:
+                    self.play_archive(index, resume_position=position, resume_paused=True)
+                else:
+                    self.mark_playing(index + 1)
+                    self.query_one("#list", ListView).index = index + 1
+            else:
+                if not directory.is_dir():
+                    return
+                self.cwd = directory
+                self.refresh_fs()
+                target = Path(file_name).expanduser() if file_name else None
+                index = next((i for i, item in enumerate(self.items) if target and item == target), -1)
+                if index < 0:
+                    return
+                if paused:
+                    self.play_fs(index, resume_position=position, resume_paused=True)
+                else:
+                    row = self.fs_audio_row(index)
+                    self.mark_playing(row)
+                    self.query_one("#list", ListView).index = row
+        except (OSError, ValueError, TypeError, RuntimeError):
+            # A removed/moved file or malformed state must not prevent startup.
+            return
 
     def folder_label(self, name):
         """Return a monochrome folder glyph colored with the active theme accent."""
@@ -742,15 +836,23 @@ class Player(App):
         self.index = -1
         lv = self.query_one("#list", ListView)
         lv.clear()
-        for p in self.items:
+        for i, p in enumerate(self.items):
             if p.is_dir():
                 name = ".." if p == self.cwd.parent and p != self.cwd else p.name
                 label = Label(self.folder_label(name))
+                lv.append(ListItem(label))
+            elif p.suffix.lower() in AUDIO:
+                row = Horizontal(
+                    Label("🎵 " + p.name, classes="audio-name"),
+                    Label("…", classes="audio-duration"),
+                    classes="audio-row",
+                )
+                lv.append(ListItem(row, id=f"fs-audio-{i}"))
             else:
                 text = ("📦 " if p.suffix.lower() in ARCHIVES else "🎵 ") + p.name
-                label = Label(text)
-            lv.append(ListItem(label))
+                lv.append(ListItem(Label(text)))
         self.query_one("#title", Label).update("Browser: " + str(self.cwd))
+        self.scan_directory_duration()
 
     def open_archive(self, p):
         self.mode = "archive"
@@ -762,8 +864,107 @@ class Player(App):
         # Same navigation convention as directories: .. exits the archive.
         lv.append(ListItem(Label(self.folder_label("..")), id="archive_parent"))
         for i, e in enumerate(self.items):
-            lv.append(ListItem(Label("🎵 " + e.display), id=f"archive-{i}"))
+            row = Horizontal(
+                Label("🎵 " + e.display, classes="audio-name"),
+                Label("…", classes="audio-duration"),
+                classes="audio-row",
+            )
+            lv.append(ListItem(row, id=f"archive-{i}"))
         self.query_one("#title", Label).update(f"📦 {p.name} ({len(self.items)} audio)")
+        self.scan_archive_duration()
+
+    @staticmethod
+    def _file_duration(path):
+        """Read duration metadata without decoding the audio stream."""
+        try:
+            media = MutagenFile(path)
+            length = getattr(getattr(media, "info", None), "length", None) if media else None
+            return float(length) if length is not None and float(length) >= 0 else None
+        except Exception:
+            return None
+
+    def _start_duration_scan(self, mode, entries, archive=None):
+        """Read per-file durations and their total off the UI thread."""
+        self._duration_scan_id += 1
+        scan_id = self._duration_scan_id
+        self.query_one("#total", Label).update("Łączny czas audio: obliczanie…")
+
+        def worker():
+            total = 0.0
+            found = 0
+            errors = 0
+            durations = {}
+            if mode == "fs":
+                for path in entries:
+                    duration = self._file_duration(path)
+                    durations[str(path)] = duration
+                    if duration is None:
+                        errors += 1
+                    else:
+                        total += duration
+                        found += 1
+            else:
+                temp = Path(tempfile.mkdtemp(prefix="aap_duration_"))
+                try:
+                    for i, entry in enumerate(entries):
+                        try:
+                            extracted = extract(entry, temp)
+                            duration = self._file_duration(extracted)
+                            durations[i] = duration
+                            if duration is None:
+                                errors += 1
+                            else:
+                                total += duration
+                                found += 1
+                            try:
+                                extracted.unlink()
+                            except OSError:
+                                pass
+                        except Exception:
+                            durations[i] = None
+                            errors += 1
+                finally:
+                    shutil.rmtree(temp, ignore_errors=True)
+            try:
+                self.call_from_thread(
+                    self._duration_scan_done, scan_id, mode, total, found,
+                    errors, len(entries), durations
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True, name="audio-duration-scan").start()
+
+    def _duration_scan_done(self, scan_id, mode, total, found, errors, count, durations):
+        if scan_id != self._duration_scan_id:
+            return
+        summary = f"Łączny czas audio: {fmt(total)} ({found}/{count} plików)"
+        if errors:
+            summary += f"; brak danych: {errors}"
+        self.query_one("#total", Label).update(summary)
+
+        lv = self.query_one("#list", ListView)
+        for item in lv.children:
+            try:
+                if mode == "fs" and item.id and item.id.startswith("fs-audio-"):
+                    index = int(item.id.rsplit("-", 1)[1])
+                    duration = durations.get(str(self.items[index]))
+                elif mode == "archive" and item.id and item.id.startswith("archive-"):
+                    index = int(item.id.rsplit("-", 1)[1])
+                    duration = durations.get(index)
+                else:
+                    continue
+                item.query_one(".audio-duration", Label).update(fmt(duration))
+            except (ValueError, IndexError, Exception):
+                # A row may disappear while the user navigates to another view.
+                continue
+
+    def scan_directory_duration(self):
+        entries = [p for p in self.items if p.is_file() and p.suffix.lower() in AUDIO]
+        self._start_duration_scan("fs", entries)
+
+    def scan_archive_duration(self):
+        self._start_duration_scan("archive", list(self.items), self.archive)
 
     def on_list_view_selected(self, event):
         item = event.item
@@ -798,52 +999,45 @@ class Player(App):
         else:
             self.play_fs(i)
 
-    def play_fs(self, i):
+    def play_fs(self, i, resume_position=0.0, resume_paused=False):
         p = self.items[i]
         self.index = i
         self.current = p
-        self.pos = 0.0
+        self.current_entry = None
+        self.pos = max(0.0, float(resume_position)) if resume_paused else 0.0
         self.length = 0.0
-        self.paused = False
+        self.paused = bool(resume_paused)
         self.show(tags(p), p.name)
-        self.mpv.load(p)
+        self.mpv.load(p, start_position=self.pos, paused=resume_paused)
         self.mark_playing(self.fs_audio_row(i))
+        if resume_paused:
+            self.notify(f"Wznowiono w pauzie: {p.name} ({fmt(self.pos)})", timeout=3)
 
     def fs_audio_row(self, item_index):
-        # Filesystem list is sorted with directories first, then archives/audio.
-        row = 0
-        if self.cwd.parent != self.cwd:
-            row += 1
-        row += sum(1 for p in self.cwd.iterdir() if p.is_dir())
-        row += sum(1 for p in self.cwd.iterdir() if p.is_file() and p.suffix.lower() in ARCHIVES)
-        audio_before = 0
-        for p in self.items:
-            if p == self.cwd.parent and p != self.cwd:
-                continue
-            if p.is_file() and p.suffix.lower() in AUDIO:
-                if self.items.index(p) == item_index:
-                    break
-                audio_before += 1
-        return row + audio_before
+        # ListView has exactly one row for each item in self.items.
+        return item_index
 
-    def _extract_archive_worker(self, entry, target, index):
+    def _extract_archive_worker(self, entry, target, index, resume_position=0.0, resume_paused=False):
         """Extract off the UI thread so large archives cannot freeze Textual."""
         try:
             path = extract(entry, target)
-            self.call_from_thread(self._archive_extract_done, path, entry, index)
+            self.call_from_thread(self._archive_extract_done, path, entry, index, resume_position, resume_paused)
         except Exception as e:
             self.call_from_thread(self._archive_extract_error, str(e), entry)
 
-    def _archive_extract_done(self, path, entry, index):
+    def _archive_extract_done(self, path, entry, index, resume_position=0.0, resume_paused=False):
         self._archive_worker = None
         self.index = index
         self.current = path
-        self.pos = 0.0
+        self.current_entry = entry
+        self.pos = max(0.0, float(resume_position)) if resume_paused else 0.0
         self.length = 0.0
-        self.paused = False
+        self.paused = bool(resume_paused)
         self.show(tags(path), entry.display)
-        self.mpv.load(path)
+        self.mpv.load(path, start_position=self.pos, paused=resume_paused)
         self.mark_playing(index + 1)
+        if resume_paused:
+            self.notify(f"Wznowiono w pauzie: {entry.display} ({fmt(self.pos)})", timeout=3)
 
     def _archive_extract_error(self, message, entry):
         self._archive_worker = None
@@ -851,7 +1045,7 @@ class Player(App):
             f"Błąd odczytu archiwum ({entry.display}):\n{message}"
         )
 
-    def play_archive(self, i):
+    def play_archive(self, i, resume_position=0.0, resume_paused=False):
         # Avoid concurrent writes into the same temporary directory.
         worker = getattr(self, "_archive_worker", None)
         if worker is not None and worker.is_alive():
@@ -864,7 +1058,7 @@ class Player(App):
         target = self.temp_dir()
         self._archive_worker = threading.Thread(
             target=self._extract_archive_worker,
-            args=(entry, target, i),
+            args=(entry, target, i, resume_position, resume_paused),
             daemon=True,
             name="archive-extractor",
         )
@@ -916,6 +1110,11 @@ class Player(App):
             if now - getattr(self, "_last_state_request", 0.0) >= 1.0:
                 self._last_state_request = now
                 self.mpv.request_state()
+            # Save paused playback position periodically so a crash/power loss
+            # does not lose the most recent pause point.
+            if self.paused and now - self._last_playback_save >= 1.0:
+                self._last_playback_save = now
+                self.save_settings()
 
         pos = max(0.0, self.pos)
         length = max(0.0, self.length)
@@ -968,11 +1167,15 @@ class Player(App):
         self.action_stop()
 
     def action_stop(self):
+        # Keep the selected track and its containing view, but do not autoplay it
+        # on the next launch.
+        self.save_stopped_selection()
         try:
             self.mpv.stop_playback()
         except Exception:
             pass
         self.current = None
+        self.current_entry = None
         self.index = -1
         self.pos = 0.0
         self.length = 0.0
