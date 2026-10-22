@@ -1,4 +1,4 @@
-# Audio Archive Player v0.5.4
+# Audio Archive Player v0.5.7
 
 ## Ustawienia
 
@@ -29,7 +29,7 @@ Zapisywane ustawienia:
 - `last_directory` — ostatnio używany katalog, otwierany przy kolejnym uruchomieniu, jeśli nie podano ścieżki w wierszu poleceń;
 - `playback` — ostatni widok i wybrany plik, stan pauzy oraz pozycja odtwarzania.
 
-Przy zwykłym zatrzymaniu (`S`) program zapamiętuje wybrany utwór, ale po kolejnym uruchomieniu tylko go zaznacza — nie rozpoczyna odtwarzania. Jeśli przed wyjściem utwór był zapauzowany, program otwiera ten sam katalog lub archiwum i odtwarza go w stanie pauzy, od zapamiętanej pozycji. Pozycja pauzy jest zapisywana okresowo. Podanie ścieżki w wierszu poleceń wyłącza przywracanie poprzedniego pliku i widoku na czas tego uruchomienia; aplikacja startuje w podanym katalogu.
+Przy zwykłym zatrzymaniu (`S`) program zapamiętuje wybrany utwór, ale po kolejnym uruchomieniu tylko go zaznacza — nie rozpoczyna odtwarzania. Jeśli przed wyjściem utwór był zapauzowany, program otwiera ten sam katalog lub archiwum i odtwarza go w stanie pauzy, od zapamiętanej pozycji. Pozycja pauzy jest zapisywana okresowo. Podczas przeglądania innych katalogów i archiwów odtwarzany plik pozostaje zaznaczony po powrocie do jego widoku; zaznaczenie kursora jest widoczne od razu po otwarciu listy. Podanie ścieżki w wierszu poleceń wyłącza przywracanie poprzedniego pliku i widoku na czas tego uruchomienia; aplikacja startuje w podanym katalogu.
 
 Naciśnij `T`, aby przełączać motywy. Ikony katalogów są monochromatyczne i przyjmują kolor akcentu aktywnego motywu. Zmiana motywu i głośności zapisuje się automatycznie. Jeśli podasz katalog przy uruchomieniu, ma on pierwszeństwo przed zapamiętanym katalogiem.
 
@@ -59,3 +59,6 @@ python .\audio_player.py "D:\Audio\Moja kolekcja"
 - `-` / `+` — zmiana głośności o 5 punktów
 - `T` — zmiana motywu
 - `Q` — wyjście
+
+
+Podczas cofania się z katalogu kursor wraca na katalog, z którego wyszliśmy. Po wyjściu z archiwum kursor wraca na to archiwum na liście plików.

@@ -674,9 +674,16 @@ class Player(App):
                 f"Podana ścieżka nie jest katalogiem lub nie istnieje:\n{self.cwd}"
             )
             self.cwd = Path.cwd()
-        self.refresh_fs()
-        if self.restore_enabled:
+        # Restoring a saved filesystem selection calls refresh_fs() itself.
+        # Do not build the same ListView twice during startup: Textual may still
+        # be processing removals from clear(), which can briefly leave duplicate
+        # IDs (for example, fs-audio-1) in the child list.
+        if self.restore_enabled and self.saved_playback:
             self.restore_playback_state()
+            if not self.query_one("#list", ListView).children:
+                self.refresh_fs()
+        else:
+            self.refresh_fs()
         self.set_interval(.20, self.tick)
 
     def on_unmount(self):
@@ -829,7 +836,17 @@ class Player(App):
             p = []
         return parent + [x for x in p if x.is_dir() or x.suffix.lower() in ARCHIVES | AUDIO]
 
-    def refresh_fs(self):
+    def _set_list_cursor(self, index):
+        """Apply a cursor position after Textual has finished rebuilding the list."""
+        lv = self.query_one("#list", ListView)
+        if index is None or not 0 <= index < len(lv.children):
+            return
+        # The highlight is only immediately visible when the ListView owns focus.
+        lv.focus()
+        lv.index = index
+
+    def refresh_fs(self, select_path=None):
+        """Rebuild the filesystem list and restore the relevant cursor position."""
         self.mode = "fs"
         self.archive = None
         self.items = self.fs_items()
@@ -852,6 +869,24 @@ class Player(App):
                 text = ("📦 " if p.suffix.lower() in ARCHIVES else "🎵 ") + p.name
                 lv.append(ListItem(Label(text)))
         self.query_one("#title", Label).update("Browser: " + str(self.cwd))
+
+        selected_index = None
+        # If the currently playing filesystem track is in this view, keep it
+        # selected even after browsing other directories or archives.
+        if self.current and self.current_entry is None:
+            selected_index = next(
+                (i for i, entry in enumerate(self.items) if entry == self.current),
+                None,
+            )
+        # Otherwise honor the navigation target (e.g. the folder/archive we left).
+        if selected_index is None and select_path is not None:
+            target = Path(select_path)
+            selected_index = next(
+                (i for i, entry in enumerate(self.items) if entry == target),
+                None,
+            )
+        if selected_index is not None:
+            self.call_after_refresh(self._set_list_cursor, selected_index)
         self.scan_directory_duration()
 
     def open_archive(self, p):
@@ -871,6 +906,18 @@ class Player(App):
             )
             lv.append(ListItem(row, id=f"archive-{i}"))
         self.query_one("#title", Label).update(f"📦 {p.name} ({len(self.items)} audio)")
+
+        # When revisiting the archive that is currently playing, select its track.
+        selected_index = None
+        if self.current_entry is not None and Path(self.current_entry.archive) == p:
+            selected_index = next(
+                (i + 1 for i, entry in enumerate(self.items)
+                 if entry.name == self.current_entry.name),
+                None,
+            )
+        if selected_index is not None:
+            self.call_after_refresh(self._set_list_cursor, selected_index)
+            self.call_after_refresh(self.mark_playing, selected_index)
         self.scan_archive_duration()
 
     @staticmethod
@@ -969,7 +1016,9 @@ class Player(App):
     def on_list_view_selected(self, event):
         item = event.item
         if item.id == "archive_parent":
-            self.refresh_fs()
+            # Return to the directory and keep the archive we just left selected.
+            archive_path = self.archive
+            self.refresh_fs(select_path=archive_path)
             return
 
         i = event.list_view.index
@@ -986,9 +1035,12 @@ class Player(App):
             return
         p = self.items[i]
         if p == self.cwd.parent and p != self.cwd:
+            # Going up: highlight the directory we just exited.
+            exited_directory = self.cwd
             self.cwd = p
-            self.refresh_fs()
+            self.refresh_fs(select_path=exited_directory)
         elif p.is_dir():
+            # Going down: remember the child directory so it is selected on return.
             self.cwd = p
             self.refresh_fs()
         elif p.suffix.lower() in ARCHIVES:
